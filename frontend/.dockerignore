@@ -1,0 +1,9 @@
+# Sve navedeno NE ulazi u build context - slika ostaje manja,
+# a tajne i lokalno instalirani moduli nikad ne zavrse u njoj.
+node_modules
+npm-debug.log
+.env
+.env.*
+.git
+Dockerfile
+.dockerignore

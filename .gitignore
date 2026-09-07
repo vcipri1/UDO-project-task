@@ -1,0 +1,9 @@
+# Stvarne vrijednosti varijabli okoline - u repozitorij ide samo .env.example
+.env
+
+node_modules/
+npm-debug.log*
+*.log
+
+# Kubernetes Secret manifesti se ne commitaju
+k8s/*secret*.yaml
