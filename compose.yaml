@@ -1,0 +1,112 @@
+# Compose datoteka za LOKALNI razvoj.
+# Cijeli stack (5 servisa) dize se jednom naredbom:  docker compose up --build
+
+services:
+
+  # ---------------- baza podataka ----------------
+  postgres:
+    # Gotova sluzbena slika - bazu ne gradimo sami, nema smisla odrzavati vlastitu.
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      # PERZISTENCIJA: imenovani volume zivi izvan kontejnera, pa podaci
+      # prezive 'docker compose down'. Bez ovoga se baza svaki put brise.
+      - postgres_data:/var/lib/postgresql/data
+      # Skripta se izvrsi SAMO pri prvoj inicijalizaciji prazne baze i kreira
+      # tablicu ticket_orders. :ro = kontejner je smije samo citati.
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      # Postgres otvori port i prije nego je spreman primati upite, pa
+      # provjeravamo pg_isready, a ne samo "je li proces ziv".
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ---------------- queue / cache ----------------
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ---------------- API ----------------
+  api:
+    build:
+      context: ./api
+      # Eksplicitno biramo runtime stage - isti target koristi i CI pipeline.
+      target: runtime
+    env_file: .env
+    ports:
+      # Lijevo port na tvom racunalu, desno port unutar kontejnera.
+      - "${API_PORT:-8080}:8080"
+    depends_on:
+      # service_healthy, ne service_started: api ceka da baza i redis
+      # stvarno prime promet, inace bi pao na startu.
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    develop:
+      watch:
+        # HOT-RELOAD: izmjena u ./api/src se odmah prenese u kontejner
+        # i proces se restarta. Node sam po sebi ne prati promjene datoteka.
+        - action: sync+restart
+          path: ./api/src
+          target: /app/src
+        # Promjena ovisnosti trazi novu sliku, ne samo restart.
+        - action: rebuild
+          path: ./api/package.json
+
+  # ---------------- pozadinski worker ----------------
+  worker:
+    build:
+      context: ./worker
+      target: runtime
+    env_file: .env
+    # Nema 'ports' jer worker nema HTTP sucelje - komunicira samo prema
+    # Redisu i Postgresu, iznutra.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    develop:
+      watch:
+        - action: sync+restart
+          path: ./worker/src
+          target: /app/src
+        - action: rebuild
+          path: ./worker/package.json
+
+  # ---------------- web frontend ----------------
+  frontend:
+    build:
+      context: ./frontend
+      target: runtime
+    env_file: .env
+    environment:
+      # VAZNO: ovu adresu poziva preglednik korisnika, a ne kontejner.
+      # Zato localhost, a NE http://api:8080 - to ime postoji samo
+      # unutar Compose mreze i preglednik ga ne moze razrijesiti.
+      API_BASE_URL: http://localhost:${API_PORT:-8080}
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  # Imenovani volume kojim upravlja Docker; brise se tek s 'docker compose down -v'.
+  postgres_data:
