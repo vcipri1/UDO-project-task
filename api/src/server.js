@@ -62,7 +62,14 @@ async function connectRedis() {
 }
 
 app.get("/healthz", (_req, res) => {
-    res.status(200).json({ status: "ok", service: "api" });
+    // Verzija se utiskuje u sliku pri gradnji (build-arg APP_VERSION), pa se
+    // iz odgovora vidi koja verzija posluzuje zahtjev. To omogucuje da se
+    // rolling update i rollback promatraju izvana, bez gledanja u klaster.
+    res.status(200).json({
+        status: "ok",
+        service: "api",
+        version: process.env.APP_VERSION || "dev"
+    });
 });
 
 app.get("/readyz", async (_req, res) => {

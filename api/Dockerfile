@@ -42,6 +42,12 @@ COPY src/ ./src/
 # ne moze prepisati vlastiti kod ni ako ga napadac preuzme.
 USER 10001
 
+# Oznaka verzije se predaje pri gradnji (--build-arg APP_VERSION=v2) i
+# ostaje utisnuta u sliku. Slika time sama zna koja je verzija, pa se
+# rolling update i rollback mogu provjeriti izvana kroz /healthz.
+ARG APP_VERSION=dev
+ENV APP_VERSION=$APP_VERSION
+
 # EXPOSE je dokumentacija za citatelja i alate - ne otvara port sam po sebi.
 EXPOSE 8080
 
