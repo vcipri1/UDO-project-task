@@ -1,0 +1,18 @@
+{
+    "name": "ticketing-worker",
+    "version": "1.0.0",
+    "private": true,
+    "main": "src/worker.js",
+    "scripts": {
+        "start": "node src/worker.js",
+        "dev": "nodemon src/worker.js"
+    },
+    "dependencies": {
+        "dotenv": "^16.4.5",
+        "pg": "^8.13.0",
+        "redis": "^4.7.0"
+    },
+    "devDependencies": {
+        "nodemon": "^3.1.7"
+    }
+}

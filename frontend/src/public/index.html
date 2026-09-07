@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Secure Event Ticketing Platform</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 2rem;
+            background: #f5f7fb;
+        }
+
+        .card {
+            max-width: 800px;
+            background: white;
+            border-radius: 12px;
+            padding: 1.5rem;
+            box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+        }
+
+        button {
+            padding: 0.5rem 1rem;
+            border: 0;
+            border-radius: 8px;
+            cursor: pointer;
+        }
+
+        input,
+        select {
+            padding: 0.5rem;
+            margin-right: 0.5rem;
+        }
+
+        pre {
+            background: #111827;
+            color: #e5e7eb;
+            border-radius: 8px;
+            padding: 1rem;
+            overflow: auto;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="card">
+        <h1>Secure Event Ticketing Platform</h1>
+        <p>Sample app for DevSecOps containerization and deployment labs.</p>
+
+        <h3>Buy ticket</h3>
+        <div>
+            <select id="eventId"></select>
+            <input id="email" type="email" value="student@example.com" />
+            <input id="qty" type="number" value="1" min="1" />
+            <button id="buy">Purchase</button>
+        </div>
+
+        <h3>Output</h3>
+        <pre id="output"></pre>
+    </div>
+
+    <script>
+        const output = document.getElementById("output");
+        const eventSelect = document.getElementById("eventId");
+
+        function showOutput(data) {
+            output.textContent = JSON.stringify(data, null, 2);
+        }
+
+        async function getConfig() {
+            const response = await fetch("/config");
+            if (!response.ok) {
+                throw new Error(`Failed to load frontend config (${response.status})`);
+            }
+            return response.json();
+        }
+
+        async function loadEvents(apiBaseUrl) {
+            const response = await fetch(`${apiBaseUrl}/events`);
+            if (!response.ok) {
+                throw new Error(`Failed to load events (${response.status})`);
+            }
+
+            const events = await response.json();
+            if (!Array.isArray(events) || events.length === 0) {
+                throw new Error("No events available");
+            }
+
+            eventSelect.innerHTML = events
+                .map((event) => `<option value="${event.id}">${event.name} (${event.location})</option>`)
+                .join("");
+        }
+
+        async function buy(apiBaseUrl) {
+            try {
+                const payload = {
+                    eventId: eventSelect.value,
+                    customerEmail: document.getElementById("email").value,
+                    quantity: Number(document.getElementById("qty").value)
+                };
+
+                const response = await fetch(`${apiBaseUrl}/tickets/purchase`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload)
+                });
+
+                const result = await response.json();
+                if (!response.ok) {
+                    showOutput({ error: "Purchase failed", details: result });
+                    return;
+                }
+
+                showOutput(result);
+            } catch (error) {
+                showOutput({ error: "Purchase request failed", details: error.message });
+            }
+        }
+
+        (async () => {
+            try {
+                const { apiBaseUrl } = await getConfig();
+                await loadEvents(apiBaseUrl);
+                document.getElementById("buy").addEventListener("click", () => buy(apiBaseUrl));
+            } catch (error) {
+                showOutput({ error: "Failed to initialize page", details: error.message });
+            }
+        })();
+    </script>
+</body>
+
+</html>
