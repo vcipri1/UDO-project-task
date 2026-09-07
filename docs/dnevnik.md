@@ -193,3 +193,98 @@ snimci i neuspješnog i uspješnog pokretanja.
 
 Uz uštedu vremena, automatizirani postupak je i **reproducibilan**: izvodi se
 identično na svakom commitu, neovisno o tome tko ga pokreće i s kojeg računala.
+
+---
+
+## 5. Produkcijsko okruženje (Kubernetes / minikube)
+
+Klaster je podignut kroz `minikube start` uz uključen `ingress` addon. Slike su
+građene lokalno i učitane u klaster (`minikube image load`), jer je repozitorij
+privatan pa bi dohvat sa GHCR-a tražio i `imagePullSecret`.
+
+Napisano je deset manifesta u `k8s/`, imenovanih s brojčanim prefiksom kako bi
+`kubectl apply -f k8s/` primijenio namespace i konfiguraciju prije servisa koji
+o njima ovise.
+
+Pri prijelazu na Kubernetes bilo je potrebno promijeniti i Dockerfile: korisnik
+je dobio **eksplicitan numerički UID (10001)** umjesto samo imena. Kubernetes ne
+može utvrditi je li korisnik zadan imenom root ili ne, pa postavka
+`runAsNonRoot: true` radi jedino kad je UID poznat broj.
+
+Svih sedam podova podiglo se iz prvog pokušaja, bez restarta, unatoč strogim
+sigurnosnim postavkama (`runAsNonRoot`, `readOnlyRootFilesystem`,
+`capabilities: drop ALL`, `seccompProfile: RuntimeDefault`).
+
+Provjera kroz Ingress potvrdila je cijeli lanac:
+
+```
+order_id                             event_id customer_email  quantity status
+89b79c7c-af9c-4a7e-9d3d-89eae7bb069a evt-1002 k8s@example.com        3 processed
+```
+
+### Incident 6 — gubitak zahtjeva tijekom rolling updatea
+
+**Kako je otkriven.** Kako bi se tvrdnja "isporuka bez prekida rada" mogla
+dokazati, a ne samo napisati, tijekom zamjene verzije pokrenuto je mjerenje koje
+svakih 500 ms poziva `/healthz` i bilježi svaki neuspjeh. API je pritom
+prilagođen tako da u odgovoru vraća oznaku verzije utisnutu u sliku pri gradnji.
+
+**Simptom.** Mjerenje pri prijelazu s `v1` na `v2`:
+
+```
+v1
+v1
+...
+GRESKA
+GRESKA
+v2
+v1
+v2
+v2
+...
+```
+
+Dva zahtjeva nisu dobila odgovor. (Pojava jednog `v1` među `v2`-ovima nije
+greška — dok obje replike postoje, Service promet dijeli između njih.)
+
+**Analiza uzroka.** Pri gašenju poda dvije se stvari događaju istodobno, a ne
+redom: pod dobiva `SIGTERM`, a njegova se adresa uklanja iz popisa odredišta
+Servicea i Ingressa. Uklanjanje adrese nije trenutno jer se mora proširiti kroz
+klaster. U tom kratkom prozoru Ingress još šalje zahtjeve podu koji već umire.
+
+Aplikacija je taj problem pogoršavala: na `SIGTERM` je odmah zatvarala vezu
+prema bazi i queueu i izlazila, ne dovršivši zahtjeve koji su bili u tijeku.
+
+**Korektivne mjere.**
+
+1. `preStop` hook (`sleep 5`) na api i frontend podovima — pod prije primanja
+   `SIGTERM` još nekoliko sekundi normalno posluživa, a klaster u međuvremenu
+   ukloni njegovu adresu iz odredišta.
+2. Graceful shutdown u `api/src/server.js` — na `SIGTERM` se prvo poziva
+   `server.close()` (prestaje primanje novih veza, dovršavaju se započete), pa
+   se tek onda zatvaraju baza i queue.
+3. `terminationGracePeriodSeconds: 30`, da oba koraka stignu uredno završiti.
+
+**Validacija.** Isto mjerenje ponovljeno je na `kubectl rollout restart`, gdje i
+pod koji odlazi i onaj koji dolazi imaju oba popravka. Rezultat: **60 uzastopnih
+uspješnih odgovora, nijedna greška**, iako su u međuvremenu zamijenjena oba poda.
+
+| Mjerenje | Zamjena podova | Neuspjeli zahtjevi |
+|---|---|---|
+| Prije popravka (v1 → v2) | da | 2 |
+| Nakon popravka (rollout restart) | da | 0 |
+
+**Pouka.** Tvrdnja o isporuci bez prekida rada nije posljedica same upotrebe
+Kubernetesa. Potrebni su readiness probe, `maxUnavailable: 0`, `preStop` hook i
+graceful shutdown u samoj aplikaciji — i tek mjerenje pokazuje radi li to stvarno.
+
+### Sporedne poteškoće u radu
+
+- **`kubectl port-forward` se prekida.** Tunel prema Ingress kontroleru povremeno
+  pada i ne obnavlja se sam, što se u mjerenju pokazivalo kao niz lažnih grešaka.
+  Riješeno pokretanjem u petlji koja ga automatski ponovno diže.
+- **Zavaravajući `CACHED` u Docker buildu.** Nakon izmjene izvornog koda build je
+  korak `COPY src/` prikazao kao `CACHED`. Provjera sadržaja slike
+  (`docker run --rm ticketing-api:v3 cat /app/src/server.js`) potvrdila je da je
+  nova verzija ipak ušla u sliku — prikaz se odnosio na već izgrađen sloj s istim
+  sadržajem. Pouka: stanje slike se provjerava u samoj slici, ne u ispisu builda.
