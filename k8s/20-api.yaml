@@ -21,6 +21,8 @@ spec:
         app: api
     spec:
       serviceAccountName: ticketing-sa
+      # Vremena da preStop i graceful shutdown uredno zavrse.
+      terminationGracePeriodSeconds: 30
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -53,6 +55,14 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 5
             failureThreshold: 3
+          # preStop se izvrsi PRIJE nego pod dobije SIGTERM. Tih nekoliko
+          # sekundi pod jos normalno posluzuje, a klaster u medjuvremenu
+          # ukloni njegovu adresu iz odredista Servicea i Ingressa.
+          # Bez ovoga se tijekom zamjene verzije gubi nekoliko zahtjeva.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
           resources:
             requests: { cpu: "100m", memory: "128Mi" }
             limits:   { cpu: "500m", memory: "256Mi" }

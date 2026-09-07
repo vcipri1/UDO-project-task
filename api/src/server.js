@@ -130,10 +130,13 @@ app.get("/tickets/orders", async (_req, res) => {
     }
 });
 
+// Referenca na HTTP server cuva se da bi ga graceful shutdown mogao zatvoriti.
+let server;
+
 connectRedis()
     .then(() => {
-        app.listen(port, () => {
-            console.log(`API listening on port ${port}`);
+        server = app.listen(port, () => {
+            console.log(`API listening on port ${port} (verzija ${process.env.APP_VERSION || "dev"})`);
         });
     })
     .catch((error) => {
@@ -141,10 +144,25 @@ connectRedis()
         process.exit(1);
     });
 
+// GRACEFUL SHUTDOWN
+// Kubernetes pri gasenju poda salje SIGTERM. Ako proces tada odmah izadje,
+// zahtjevi koji su vec u tijeku ostaju bez odgovora - sto se u mjerenju
+// vidjelo kao kratki prekid tijekom rolling updatea.
+// Ispravan redoslijed je: prestani primati nove veze, dovrsi zapocete,
+// pa tek onda zatvori bazu i queue.
 process.on("SIGTERM", async () => {
+    console.log("SIGTERM primljen - zatvaram HTTP server");
+
+    if (server) {
+        await new Promise((resolve) => server.close(resolve));
+        console.log("HTTP server zatvoren, svi zahtjevi u tijeku su dovrseni");
+    }
+
     await pgPool.end();
     if (redisClient.isOpen) {
         await redisClient.quit();
     }
+
+    console.log("Zatvaranje dovrseno");
     process.exit(0);
 });

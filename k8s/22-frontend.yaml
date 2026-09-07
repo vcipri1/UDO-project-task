@@ -19,6 +19,7 @@ spec:
         app: frontend
     spec:
       serviceAccountName: ticketing-sa
+      terminationGracePeriodSeconds: 30
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -41,6 +42,12 @@ spec:
             httpGet: { path: /healthz, port: 3000 }
             initialDelaySeconds: 3
             periodSeconds: 5
+          # Isti razlog kao kod api-ja: pod se ne gasi dok klaster ne makne
+          # njegovu adresu iz odredista.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
           resources:
             requests: { cpu: "50m",  memory: "128Mi" }
             limits:   { cpu: "300m", memory: "256Mi" }
