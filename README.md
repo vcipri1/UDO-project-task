@@ -118,6 +118,26 @@ Invoke-RestMethod -Uri http://localhost:8080/tickets/purchase -Method Post `
   -Body '{"eventId":"evt-1001","customerEmail":"student@example.com","quantity":2}'
 ```
 
+## Podman ekvivalenti
+
+Projekt je izveden s Dockerom, no zadatak jednako dopušta Podman. Naredbe su
+gotovo istovjetne jer Podman implementira isto sučelje:
+
+| Docker | Podman |
+|---|---|
+| `docker build -t ime:oznaka ./api` | `podman build -t ime:oznaka ./api` |
+| `docker run --rm ime:oznaka` | `podman run --rm ime:oznaka` |
+| `docker compose up --build -d` | `podman compose up --build -d` |
+| `docker compose ps` / `logs` / `down` | `podman compose ps` / `logs` / `down` |
+| `docker images` | `podman images` |
+| `docker push ghcr.io/...` | `podman push ghcr.io/...` |
+
+Datoteka `Dockerfile` kod Podmana se uobičajeno zove `Containerfile`, ali Podman
+prihvaća oba imena bez izmjena u sadržaju. Bitna razlika je arhitekturna: Podman
+nema pozadinski servis (daemon) i kontejnere može pokretati bez administratorskih
+ovlasti, što je sigurnosna prednost — iako je i ovdje proces unutar kontejnera
+namjerno postavljen da ne vrti kao root.
+
 ## Sigurnosne mjere
 
 - Multi-stage build i minimalna `node:22-alpine` runtime slika (~58 MB)
