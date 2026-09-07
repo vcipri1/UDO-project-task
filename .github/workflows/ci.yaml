@@ -1,0 +1,201 @@
+name: CI - test, build, scan, push
+
+# Pipeline se okida na svaki push i pull request prema main grani.
+# Lanac je namjerno posložen tako da se slika objavi tek ako sve prije prođe:
+#   test  ->  smoke-test (cijeli stack end-to-end)  ->  build + Trivy gate  ->  push u registry
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Least privilege: workflow dobiva točno onoliko prava koliko mu treba.
+# Bez ovog bloka GITHUB_TOKEN ima šira prava nego što je potrebno.
+permissions:
+  contents: read          # checkout koda
+  packages: write         # objava slike u GitHub Container Registry
+  security-events: write  # upload Trivy nalaza u Security tab
+
+jobs:
+
+  # ---------------------------------------------------------------
+  # 1) Brza provjera koda. Pada u sekundama ako je netko commitao
+  #    sintaksnu grešku - nema smisla graditi slike prije toga.
+  # ---------------------------------------------------------------
+  test:
+    name: test (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [api, frontend, worker]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Instalacija ovisnosti
+        working-directory: ./${{ matrix.service }}
+        run: npm install
+
+      - name: Provjera sintakse
+        working-directory: ./${{ matrix.service }}
+        run: for f in $(find src -name '*.js'); do node --check "$f"; done
+
+      - name: npm audit (ranjivosti u ovisnostima)
+        working-directory: ./${{ matrix.service }}
+        # Ovo je izvještaj, ne brana - ranjivost u tudjoj biblioteci ne mora
+        # znaciti da je nasa aplikacija ranjiva. Brana je Trivy nize.
+        run: npm audit --audit-level=high || true
+
+  # ---------------------------------------------------------------
+  # 2) End-to-end provjera: podigne se cijeli stack kroz Compose i
+  #    stvarno se kupi karta. Dokazuje da api, redis, worker i baza
+  #    rade zajedno, a ne samo da se svaki servis pokrece.
+  # ---------------------------------------------------------------
+  smoke-test:
+    name: smoke test (end-to-end)
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Priprema varijabli okoline
+        run: cp .env.example .env
+
+      - name: Podizanje stacka
+        run: docker compose up --build -d
+
+      - name: Cekanje da API postane spreman
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/readyz > /dev/null; then
+              echo "API spreman nakon ${i} pokusaja"; exit 0
+            fi
+            sleep 2
+          done
+          echo "API nije postao spreman"; docker compose ps; exit 1
+
+      - name: Kupnja karte i provjera obrade
+        run: |
+          ORDER_ID=$(curl -sf -X POST http://localhost:8080/tickets/purchase \
+            -H "Content-Type: application/json" \
+            -d '{"eventId":"evt-1001","customerEmail":"ci@example.com","quantity":2}' \
+            | jq -r '.orderId')
+          echo "Narudzba: $ORDER_ID"
+
+          # Obrada je asinkrona - worker treba trenutak, pa provjeravamo u petlji.
+          for i in $(seq 1 15); do
+            if curl -sf http://localhost:8080/tickets/orders \
+              | jq -e --arg id "$ORDER_ID" '.[] | select(.order_id==$id and .status=="processed")' > /dev/null; then
+              echo "Narudzba obradjena - cijeli lanac api -> redis -> worker -> postgres radi"; exit 0
+            fi
+            sleep 2
+          done
+          echo "Narudzba nije obradjena u ocekivanom roku"; exit 1
+
+      - name: Logovi u slucaju pada
+        if: failure()
+        run: docker compose logs
+
+      - name: Ciscenje
+        if: always()
+        run: docker compose down -v
+
+  # ---------------------------------------------------------------
+  # 3) Gradnja slika, sigurnosna brana i objava u registry.
+  # ---------------------------------------------------------------
+  build-scan-push:
+    name: build & scan (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    needs: [test, smoke-test]
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [api, frontend, worker]
+
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/ticketing-${{ matrix.service }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Gradimo u lokalni Docker daemon (push: false, load: true) NAMJERNO:
+      # tako Trivy moze skenirati sliku prije nego ijedna verzija ode na registry.
+      - name: Gradnja slike
+        uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.service }}
+          target: runtime
+          push: false
+          load: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+          # Povezuje objavljenu sliku s ovim repozitorijem na GitHubu.
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+
+      # QUALITY GATE. exit-code: 1 znaci da job PADNE ako Trivy nadje
+      # ranjivost zadanog severityja - i objava se nikad ne dogodi.
+      # Branimo na CRITICAL. HIGH namjerno ne rusi build jer dolazi iz bazne
+      # slike i ne mozemo ga popraviti u vlastitom kodu, ali ga evidentiramo nize.
+      - name: Trivy - sigurnosna brana (CRITICAL)
+        uses: aquasecurity/trivy-action@master
+        # U produkciji bi se ovdje pinirala tocna verzija (ili commit SHA)
+        # radi zastite lanca opskrbe; @master koristimo radi stabilnosti primjera.
+        with:
+          image-ref: ${{ env.IMAGE }}:${{ github.sha }}
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+
+      # Drugi prolaz: evidencija SVIH nalaza. exit-code 0 -> nikad ne rusi build.
+      # if: always() -> izvrsi se i ako je brana iznad pala, da nalaz imamo i tada.
+      - name: Trivy - izvjestaj (SARIF)
+        if: always()
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.IMAGE }}:${{ github.sha }}
+          format: sarif
+          output: trivy-${{ matrix.service }}.sarif
+          exit-code: '0'
+
+      - name: Spremanje izvjestaja kao artefakt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report-${{ matrix.service }}
+          path: trivy-${{ matrix.service }}.sarif
+          retention-days: 30
+
+      - name: Prikaz nalaza u GitHub Security tabu
+        if: always()
+        continue-on-error: true   # privatni repo bez Advanced Security ne smije srusiti pipeline
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-${{ matrix.service }}.sarif
+          category: trivy-${{ matrix.service }}
+
+      # Prijava na registry. Koristi se ugradjeni GITHUB_TOKEN - nema
+      # hardkodirane lozinke ni rucno kreiranog tokena u repozitoriju.
+      - name: Prijava na GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Objava se dogadja TEK OVDJE - dakle tek nakon sto je slika prosla branu.
+      # Politika tagiranja: :<commit-sha> je nepromjenjiv i tocno kaze koji kod
+      # vrti u produkciji; :latest je pokretna oznaka za pogodnost.
+      - name: Objava slike na GHCR
+        if: github.event_name == 'push'
+        run: |
+          docker push ${{ env.IMAGE }}:${{ github.sha }}
+          docker push ${{ env.IMAGE }}:latest
