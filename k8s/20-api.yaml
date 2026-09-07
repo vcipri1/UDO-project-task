@@ -1,0 +1,85 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: ticketing
+spec:
+  # Dvije replike: promet se dijeli, a tijekom zamjene verzije uvijek
+  # barem jedna posluzuje korisnike.
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0   # nijedna replika ne smije nestati prije nego nova prodje readiness
+      maxSurge: 1         # smije se privremeno dici jedna replika viska
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      serviceAccountName: ticketing-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api
+          image: ticketing-api:v1
+          # Slika se gradi lokalno i ucitava u minikube; ne dohvaca se s registryja.
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef: { name: app-config }
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: app-secret, key: POSTGRES_PASSWORD }
+          # /healthz odgovara cim proces radi -> je li ziv.
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          # /readyz provjerava i bazu i redis -> smije li primati promet.
+          # Ovo je ono sto rolling update cini bezbolnim: novi pod ne dobiva
+          # promet dok stvarno ne moze posluziti zahtjev.
+          readinessProbe:
+            httpGet: { path: /readyz, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits:   { cpu: "500m", memory: "256Mi" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # Datotecni sustav je samo za citanje; /tmp je jedini zapisiv,
+        # i to u memoriji, pa nestaje sa podom.
+        - name: tmp
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: ticketing
+spec:
+  type: ClusterIP
+  selector:
+    app: api
+  ports:
+    - port: 8080
+      targetPort: 8080

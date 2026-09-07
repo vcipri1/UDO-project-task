@@ -20,7 +20,10 @@ WORKDIR /app
 
 # Sistemski korisnik bez lozinke i bez home direktorija.
 # Bez ovoga bi kontejner vrtio kao root - najcesca sigurnosna greska.
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+# Korisnik dobiva EKSPLICITAN numericki UID. Kubernetes ne moze provjeriti
+# je li korisnik zadan imenom root ili ne, pa 'runAsNonRoot: true' u manifestu
+# radi samo ako je UID poznat broj.
+RUN addgroup -g 10001 -S appgroup && adduser -u 10001 -S -G appgroup appuser
 
 # HARDENING: iz runtime slike uklanjamo npm CLI.
 # Aplikacija se pokrece s 'node src/server.js' i npm joj u radu ne treba -
@@ -37,7 +40,7 @@ COPY src/ ./src/
 
 # Datoteke ostaju u vlasnistvu roota, a appuser ih samo cita. Tako proces
 # ne moze prepisati vlastiti kod ni ako ga napadac preuzme.
-USER appuser
+USER 10001
 
 # EXPOSE je dokumentacija za citatelja i alate - ne otvara port sam po sebi.
 EXPOSE 8080

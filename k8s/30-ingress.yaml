@@ -1,0 +1,29 @@
+# Ingress je JEDINA ulazna tocka izvana. Interni servisi (postgres, redis)
+# ovdje se ne pojavljuju i time nisu dostupni s vanjske mreze.
+#
+# /     -> frontend:3000
+# /api  -> api:8080     (sam api uklanja prefiks /api iz putanje)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ticketing
+  namespace: ticketing
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: api
+                port:
+                  number: 8080
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 3000

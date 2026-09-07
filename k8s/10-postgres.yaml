@@ -1,0 +1,123 @@
+# Inicijalizacijska skripta se u Kubernetes ne moze montirati s diska kao u
+# Composeu, pa ide u ConfigMap i odatle u kontejner kao datoteka.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: ticketing
+data:
+  init.sql: |
+    CREATE TABLE IF NOT EXISTS ticket_orders (
+        id SERIAL PRIMARY KEY,
+        order_id TEXT UNIQUE NOT NULL,
+        event_id TEXT NOT NULL,
+        customer_email TEXT NOT NULL,
+        quantity INTEGER NOT NULL CHECK (quantity > 0),
+        status TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ticket_orders_created_at ON ticket_orders (created_at DESC);
+
+---
+# PersistentVolumeClaim je zahtjev za trajnim diskom. Bez njega bi podaci
+# nestali pri svakoj zamjeni poda - Kubernetes podove smatra prolaznima.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  namespace: ticketing
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: ticketing
+spec:
+  replicas: 1
+  # Recreate, a ne RollingUpdate: disk je ReadWriteOnce pa ga dva poda ne mogu
+  # istovremeno drzati. Stari pod mora nestati prije nego se digne novi.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      serviceAccountName: ticketing-sa
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef: { name: app-config, key: POSTGRES_DB }
+            - name: POSTGRES_USER
+              valueFrom:
+                configMapKeyRef: { name: app-config, key: POSTGRES_USER }
+            # Lozinka dolazi ISKLJUCIVO iz Secreta - nigdje u repozitoriju.
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: app-secret, key: POSTGRES_PASSWORD }
+            # Podaci idu u poddirektorij montiranog diska; na nekim
+            # storage klasama initdb odbija raditi u korijenu volumena.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+          # Readiness: smije li pod primati promet. Postgres otvori port prije
+          # nego je spreman na upite, pa provjeravamo pg_isready.
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          # Liveness: je li proces uopce ziv. Ako padne, Kubernetes ga restarta.
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          # requests = koliko mu se jamci i po cemu scheduler bira cvor.
+          # limits  = tvrda gornja granica; bez nje jedan servis moze pojesti cvor.
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits:   { cpu: "500m", memory: "512Mi" }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: postgres-data
+        - name: init
+          configMap:
+            name: postgres-init
+
+---
+# Service daje skupini podova stalno ime i adresu. ClusterIP znaci da je
+# dostupan samo unutar klastera - baza nikad nije izlozena prema van.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: ticketing
+spec:
+  type: ClusterIP
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432

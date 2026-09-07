@@ -10,7 +10,10 @@ RUN npm install --omit=dev
 FROM node:22-alpine AS runtime
 WORKDIR /app
 
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+# Korisnik dobiva EKSPLICITAN numericki UID. Kubernetes ne moze provjeriti
+# je li korisnik zadan imenom root ili ne, pa 'runAsNonRoot: true' u manifestu
+# radi samo ako je UID poznat broj.
+RUN addgroup -g 10001 -S appgroup && adduser -u 10001 -S -G appgroup appuser
 
 # HARDENING: iz runtime slike uklanjamo npm CLI.
 # Aplikacija se pokrece s 'node src/server.js' i npm joj u radu ne treba -
@@ -25,5 +28,5 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY package*.json ./
 COPY src/ ./src/
 
-USER appuser
+USER 10001
 CMD ["node", "src/worker.js"]

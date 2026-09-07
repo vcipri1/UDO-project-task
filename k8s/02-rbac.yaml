@@ -1,0 +1,51 @@
+# --- Identitet aplikacije ---
+# Zadano bi svi podovi vrtjeli pod 'default' ServiceAccountom namespacea.
+# Aplikacija dobiva vlastiti racun BEZ ijednog prava, jer s Kubernetes API-jem
+# uopce ne komunicira. Token se ni ne montira u pod - ako ga nema, ne moze biti
+# ni ukraden. To je najstroza moguca primjena principa najmanje ovlasti.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ticketing-sa
+  namespace: ticketing
+automountServiceAccountToken: false
+
+---
+# --- Identitet za dijagnostiku ---
+# Zaseban racun za osobu koja rjesava incidente po runbooku. Smije SAMO citati
+# stanje i logove; ne smije nista mijenjati, brisati ni citati Secrete.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ticketing-operator
+  namespace: ticketing
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ticketing-troubleshooter
+  namespace: ticketing
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "services", "events", "persistentvolumeclaims"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  # Namjerno NEMA prava na 'secrets' i nema verbova create/update/delete.
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ticketing-troubleshooter
+  namespace: ticketing
+subjects:
+  - kind: ServiceAccount
+    name: ticketing-operator
+    namespace: ticketing
+roleRef:
+  kind: Role
+  name: ticketing-troubleshooter
+  apiGroup: rbac.authorization.k8s.io

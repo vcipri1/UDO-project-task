@@ -1,0 +1,22 @@
+# ConfigMap drzi konfiguraciju koja NIJE tajna. Lozinka baze ovdje namjerno
+# ne postoji - ona je u Secretu koji se kreira izvan repozitorija.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: ticketing
+data:
+  POSTGRES_DB: ticketing
+  POSTGRES_USER: ticketing_user
+  # Imena Service objekata - Kubernetes ih razrjesava kao DNS imena unutar namespacea.
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  API_PORT: "8080"
+  FRONTEND_PORT: "3000"
+  QUEUE_NAME: ticket_orders
+  NODE_ENV: production
+  # Relativna putanja: preglednik salje zahtjev na isti host preko Ingressa,
+  # koji /api rutira na api servis. Zato ovdje NE stoji ime servisa.
+  API_BASE_URL: /api

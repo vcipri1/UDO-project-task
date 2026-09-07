@@ -1,0 +1,9 @@
+# Namespace je izolirani prostor imena unutar klastera. Svi resursi projekta
+# zive u njemu, pa se cijelo okruzenje moze obrisati jednom naredbom i ne
+# mijesa se s ostalim aplikacijama na istom klasteru.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ticketing
+  labels:
+    name: ticketing

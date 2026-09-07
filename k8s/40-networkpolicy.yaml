@@ -1,0 +1,95 @@
+# Zadano u Kubernetesu svaki pod moze pricati sa svakim. NetworkPolicy to
+# suzava. Radi se u dva koraka: prvo se sve zabrani, pa se dopusti samo ono
+# sto je stvarno potrebno (default deny + explicit allow).
+
+# --- 1. Sve zabraniti ---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: ticketing
+spec:
+  podSelector: {}        # prazan selektor = svi podovi u namespaceu
+  policyTypes: ["Ingress"]
+
+---
+# --- 2. Baza prima promet samo od api i workera ---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-postgres-from-app
+  namespace: ticketing
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: api } }
+        - podSelector: { matchLabels: { app: worker } }
+      ports:
+        - protocol: TCP
+          port: 5432
+
+---
+# --- 3. Redis prima promet samo od api i workera ---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-redis-from-app
+  namespace: ticketing
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: api } }
+        - podSelector: { matchLabels: { app: worker } }
+      ports:
+        - protocol: TCP
+          port: 6379
+
+---
+# --- 4. API prima promet samo kroz Ingress kontroler ---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-api-from-ingress
+  namespace: ticketing
+spec:
+  podSelector:
+    matchLabels:
+      app: api
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080
+
+---
+# --- 5. Frontend prima promet samo kroz Ingress kontroler ---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-from-ingress
+  namespace: ticketing
+spec:
+  podSelector:
+    matchLabels:
+      app: frontend
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 3000
